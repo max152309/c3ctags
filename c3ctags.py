@@ -18,6 +18,7 @@ def get_json(path):
 def format_type(Type):
     Type = Type.replace("[", r"\[")
     Type = Type.replace("]", r"\]")
+    Type = Type.replace("?", r"\?")
     Type = Type.replace("*", r"\s*\*\s*")
     return Type
 
