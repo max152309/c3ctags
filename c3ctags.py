@@ -12,7 +12,6 @@ c3c = "c3c"
 params = ["compile", "-P", "--use-stdlib=no"]
 
 def get_json(path):
-    assert(path.endswith(".c3") or path.endswith(".c3i"))
     return json.loads(subprocess.check_output((c3c, *params, path)))
 
 def format_type(Type):
@@ -28,63 +27,75 @@ def unnamespace(namespaced):
         return namespaced
     return namespaced[2 + last:]
 
-def add_regex(text, result, regex, name) ->int:
-    Match = regex.search(text)
-    if Match is None:
-        print(regex)
-        print(f"ERROR: Failed to find {name}")
-        raise ValueError
-    offset = Match.start()
-    text_up_to = text[:offset]
-    line = 1 + text_up_to.count("\n")
-    line_start = text_up_to.rfind("\n") + 1
-    end = Match.end()
-    result.append(b"%b\x7f%b\x01%d,%d" % (text[line_start:end].encode(), name.encode(), line, line_start))
-    return end
+def add_regex(text, start, result, regex, name) ->int:
+  Match = regex.search(text, start)
+  if Match is None:
+    if start == 0:
+      print(regex)
+      print(f"ERROR: Failed to find {name}")
+      raise ValueError
+    return add_regex(text, 0, result, regex, name)
+  offset = Match.start()
+  text_up_to = text[:offset]
+  line = 1 + text_up_to.count("\n")
+  line_start = text_up_to.rfind("\n") + 1
+  end = Match.end()
+  result.append(b"%b\x7f%b\x01%d,%d" % (text[line_start:end].encode(), name.encode(), line, line_start))
+  return end
 
-def parse(item, text, result, prefix) -> int:
+def parse(item, text, start, result, prefix) -> int:
     name = unnamespace(item["name"])
     if not prefix:
         regex = re.compile(rf"{name}")
     else:
         regex = re.compile(rf"{prefix}.*?{name}")
     try:
-        return add_regex(text, result,regex, name)
+        return add_regex(text, start, result,regex, name)
     except:
         print(item)
         raise
 
-def parse_with_type(item, text, result, T, prefix) -> int:
+def parse_with_type(item, text, start, result, T, prefix) -> int:
+    if start is None:
+      start = 0
     try:
         Type = format_type(item[T])
     except:
         Type = ""
     if Type == "":
-        parse(item, text, result, prefix)
+        parse(item, text, start, result, prefix)
     else:
         if not prefix:
-            parse(item, text, result, Type)
+            parse(item, text, start, result, Type)
         else:
-            parse(item, text, result, f"{prefix}.*?{Type}")
+            parse(item, text, start, result, f"{prefix}.*?{Type}")
 
 def _parse_types(ast, text, result, T):
-    start = 0
-    for Type in ast[T]:
-        kind = Type["kind"]
-        name = Type["name"]
-        t_name = unnamespace(name)
-        
-        if kind in ("struct", "enum", "distinct", "bitstruct", "union"):
-            start = parse(Type, text[start:], result, kind)
-            continue
-        
-        if kind == "typedef":
-            start = parse(Type, text[start:], result, "def")
-            continue
-        
-        print(Type)
-        raise NotImplementedError
-    del ast[T]
+  start = 0
+  for Type in ast[T]:
+    kind = Type["kind"]
+
+    if kind in ("struct", "enum", "distinct", "bitstruct", "union", "interface"):
+      start = parse(Type, text, start, result, kind)
+      continue
+    if kind == "typedef":
+      continue
+    print(Type)
+    raise NotImplementedError
+
+  start = 0
+  for Type in ast[T]:
+    kind = Type["kind"]
+    
+    if kind == "typedef":
+      start = parse(Type, text, start, result, "def")
+      continue
+    if kind in ("struct", "enum", "distinct", "bitstruct", "union", "interface"):
+      continue
+    print(Type)
+    raise NotImplementedError
+          
+  del ast[T]
 
 def parse_types(ast, text, result):
     _parse_types(ast, text, result, "types")
@@ -93,29 +104,29 @@ def parse_types(ast, text, result):
 def parse_functions(ast, text, result):
     start = 0
     for fn in ast["functions"]:
-        start = parse_with_type(fn, text[start:], result, "rtype", "fn")
+        start = parse_with_type(fn, text, start, result, "rtype", "fn")
     del ast["functions"]
     
     start = 0
     for fn in ast["generic_functions"]:
-        start = parse_with_type(fn, text[start:], result, "rtype", "fn")
+        start = parse_with_type(fn, text, start, result, "rtype", "fn")
     del ast["generic_functions"]
 
 def parse_macros(ast, text, result):
     start = 0
     for macro in ast["macros"]:
-        start = parse_with_type(macro, text[start:], result, "rtype", "macro")
+        start = parse_with_type(macro, text, start, result, "rtype", "macro")
     del ast["macros"]
 
     start = 0
     for macro in ast["generic_macros"]:
-        start = parse_with_type(macro, text[start:], result, "rtype", "macro")
+        start = parse_with_type(macro, text, start, result, "rtype", "macro")
     del ast["generic_macros"]
 
 def parse_constants(ast, text, result):
     start = 0
     for constant in ast["constants"]:
-        start = parse_with_type(constant, text[start:], result, "type", "const")
+        start = parse_with_type(constant, text, start, result, "type", "const")
     del ast["constants"]
 
 def parse_modules(ast, text, result):
@@ -123,18 +134,18 @@ def parse_modules(ast, text, result):
     for module in ast["modules"]:
         if module == "std::core":
             continue
-        start = parse({"name": module}, text[start:], result, "module")
+        start = parse({"name": module}, text, start, result, "module")
     del ast["modules"]
 
     start = 0
     for module in ast["generic_modules"]:
-        start = parse({"name": module}, text[start:], result, "module")
+        start = parse({"name": module}, text, start, result, "module")
     del ast["generic_modules"]
 
 def parse_globals(ast, text, result):
     start = 0
     for Global in ast["globals"]:
-        start = parse_with_type({"name": Global, **ast["globals"][Global]}, text[start:], result, "type", None)
+        start = parse_with_type({"name": Global, **ast["globals"][Global]}, text, start, result, "type", None)
     del ast["globals"]
 
 def c3ctags(paths: list, output_file: str="TAGS", append=False, no_globals=False):
